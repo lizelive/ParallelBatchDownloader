@@ -5,22 +5,21 @@ namespace ParallelBatchDownloader
 {
     class Download
     {
-        [Key]
         public string Uri { get; set; }
         public string Path { get; set; }
         public string Hash { get; set; }
-        //public int Id { get; set; }
-        public byte[] Data { get; set; }
+        public int Id { get; set; }
+        
         public Status State { get; set; } = Status.Queued;
         public int Size { get; set; }
 
         public enum Status
         {
-            Queued,
-            Downloading,
-            Downloaded,
-            Completed,
-            Failed
+            Queued=1,
+            Downloading=2,
+            Downloaded=3,
+            Completed=4,
+            Failed=5
         }
 
         static readonly Uri Base = new("file:\\D:\\");

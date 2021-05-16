@@ -7,6 +7,7 @@ using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
 using System.Security.Cryptography;
+using System.Timers;
 
 namespace ParallelBatchDownloader
 {
@@ -17,12 +18,14 @@ namespace ParallelBatchDownloader
 
         static async Task DoSomething(Download dr)
         {
-            if (dr.State != Download.Status.Queued)
-                throw new Exception($"DL Request is in invalid state {dr.State}");
+            using var context = new DownloadContext();
+            dr = await context.Downloads.FindAsync(dr.Id);
+            //if (dr.State != Download.Status.Queued && dr.State != Download.Status.Failed)
+            //    throw new Exception($"DL Request is in invalid state {dr.State}");
             dr.State = Download.Status.Downloading;
+            await context.SaveChangesAsync();
 
-
-            using var transaction = Context.Database.BeginTransaction();
+            //using var transaction = Context.Database.BeginTransaction();
             Directory.CreateDirectory(Path.GetDirectoryName(dr.Path));
             //using WebClient client = new();
 
@@ -33,19 +36,24 @@ namespace ParallelBatchDownloader
                 Stopwatch timer = new();
                 timer.Start();
                 var data = await client.GetByteArrayAsync(dr.Uri);
-                var writeTask = File.WriteAllBytesAsync(dr.Path, data);
                 var hash = mySHA256.ComputeHash(data);
+                dr.Size = data.Length;
+                dr.Hash = Convert.ToHexString(hash);
+                dr.State = Download.Status.Downloaded;
+                await context.SaveChangesAsync();
+
+                Directory.CreateDirectory(Path.GetDirectoryName(dr.Path));
+                var writeTask = File.WriteAllBytesAsync(dr.Path, data);
                 await writeTask;
-                timer.Stop();
-                lock (winlock)
-                {
-                    File.AppendAllTextAsync("D:\\downloaded.tsv", $"{Convert.ToHexString(hash)}\t{timer.ElapsedMilliseconds}\t{data.Length}\t{dr.Uri}\n");
-                }
+                dr.State = Download.Status.Completed;
+                await context.SaveChangesAsync();
             }
             catch (Exception e)
             {
-                dr.State = Download.Status.Downloading;
-                dr
+                Console.Error.WriteLine(e);
+
+                dr.State = Download.Status.Failed;
+                await context.SaveChangesAsync();
             }
         }
 
@@ -55,18 +63,36 @@ namespace ParallelBatchDownloader
             context.AddRange(File.ReadAllLines("D:\\todownload.tsv").Select(Download.Parse));
             context.SaveChanges();
         }
-        static DownloadContext Context;
-        static void Main(string[] args)
+
+        static void ShowStatus(object sender = null, ElapsedEventArgs e = null)
         {
             using var context = new DownloadContext();
-            Context = context;
-            var toDo = context.Downloads.Where(x => x.State == Download.Status.Queued).Take(10).ToList();
-            
-            
-            //Directory.SetCurrentDirectory("D:\\");
+
+            var summery = context.Downloads.AsEnumerable().GroupBy(x => x.State).Select(x => (x.Key, Value: x.Count()));
+            Console.WriteLine(DateTimeOffset.Now);
+            foreach (var value in summery)
+            {
+                Console.WriteLine($"{value.Key}\t{value.Value}");
+            }
+        }
+
+        static Task DoDownload()
+        {
+            using var context = new DownloadContext();
+            var toDo = context.Downloads.Where(x => x.State != Download.Status.Completed);
+            return toDo.AsyncParallelForEach(DoSomething, maxDegreeOfParallelism: 10);
+        }
+        static void Main(string[] args)
+        {
+            //ImportTsv();
+            ShowStatus();
+            //Timer showStatusTimer = new(60);
+            //showStatusTimer.Elapsed += ShowStatus;
+            //showStatusTimer.Start();
+            Directory.SetCurrentDirectory("D:\\");
             Stopwatch timer = new();
             timer.Start();
-            var downloadAllTask = toDo.AsyncParallelForEach(DoSomething);
+            var downloadAllTask = DoDownload();
             downloadAllTask.Wait();
             timer.Stop();
             Console.WriteLine(timer.ElapsedMilliseconds);
