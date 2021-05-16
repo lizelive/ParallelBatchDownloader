@@ -15,13 +15,14 @@ namespace ParallelBatchDownloader
         static object failock = new object();
         static object winlock = new object();
 
-        static async Task DoSomething(string stuff)
+        static async Task DoSomething(Download dr)
         {
-            var dr = DownloadRequest.Parse(stuff);
-            if (File.Exists(dr.Path))
-            {
-                return;
-            }
+            if (dr.State != Download.Status.Queued)
+                throw new Exception($"DL Request is in invalid state {dr.State}");
+            dr.State = Download.Status.Downloading;
+
+
+            using var transaction = Context.Database.BeginTransaction();
             Directory.CreateDirectory(Path.GetDirectoryName(dr.Path));
             //using WebClient client = new();
 
@@ -43,25 +44,31 @@ namespace ParallelBatchDownloader
             }
             catch (Exception e)
             {
-                lock (failock)
-                {
-                    File.AppendAllText("D:\\failed.tsv", dr.ToString() + '\n');
-                }
-                Console.Error.WriteLine(e);
-                if(File.Exists(dr.Path))
-                    File.Delete(dr.Path);
+                dr.State = Download.Status.Downloading;
+                dr
             }
         }
 
+        static void ImportTsv()
+        {
+            using var context = new DownloadContext();
+            context.AddRange(File.ReadAllLines("D:\\todownload.tsv").Select(Download.Parse));
+            context.SaveChanges();
+        }
+        static DownloadContext Context;
         static void Main(string[] args)
         {
-            Directory.SetCurrentDirectory("D:\\");
+            using var context = new DownloadContext();
+            Context = context;
+            var toDo = context.Downloads.Where(x => x.State == Download.Status.Queued).Take(10).ToList();
+            
+            
+            //Directory.SetCurrentDirectory("D:\\");
             Stopwatch timer = new();
             timer.Start();
-            var toDownload = Utils.ReadLinesAsync("./todownload.tsv").AsyncParallelForEach(DoSomething, maxDegreeOfParallelism: 30);
-            toDownload.Wait();
+            var downloadAllTask = toDo.AsyncParallelForEach(DoSomething);
+            downloadAllTask.Wait();
             timer.Stop();
-
             Console.WriteLine(timer.ElapsedMilliseconds);
         }
     }
