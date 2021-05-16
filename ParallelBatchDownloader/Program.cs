@@ -8,9 +8,24 @@ using System.Net.Http;
 using System.Threading.Tasks;
 using System.Security.Cryptography;
 using System.Timers;
+using CommandLine;
 
 namespace ParallelBatchDownloader
 {
+    public class Options
+    {
+        [Option('v', "verbose", Required = false, HelpText = "Set output to verbose messages.")]
+        public bool Verbose { get; set; }
+
+        [Option('s', "stats", Required = false, HelpText = "Show progress stats on startup.")]
+        public bool ShowStats { get; set; }
+
+        [Option('v', "verbose", Required = false, HelpText = "Set output to verbose messages.")]
+
+        public string ImportTsv { get; set; }
+
+
+    }
     class Program
     {
         static object failock = new object();
@@ -68,8 +83,12 @@ namespace ParallelBatchDownloader
         {
             using var context = new DownloadContext();
 
-            var summery = context.Downloads.AsEnumerable().GroupBy(x => x.State).Select(x => (x.Key, Value: x.Count()));
+            var totalBytesToDownloaded = context.Downloads.Where(x => x.State == Download.Status.Completed).Average(x => x.Size) * context.Downloads.Count();
+
+            Console.WriteLine(totalBytesToDownloaded + " bytes to download");
+            
             Console.WriteLine(DateTimeOffset.Now);
+            var summery = context.Downloads.AsEnumerable().GroupBy(x => x.State).Select(x => (x.Key, Value: x.Count()));
             foreach (var value in summery)
             {
                 Console.WriteLine($"{value.Key}\t{value.Value}");
@@ -82,18 +101,19 @@ namespace ParallelBatchDownloader
             var toDo = context.Downloads.Where(x => x.State != Download.Status.Completed);
             return toDo.AsyncParallelForEach(DoSomething, maxDegreeOfParallelism: 10);
         }
-        static void Main(string[] args)
+        static async Task Main(string[] args)
         {
             //ImportTsv();
             ShowStatus();
             //Timer showStatusTimer = new(60);
             //showStatusTimer.Elapsed += ShowStatus;
             //showStatusTimer.Start();
+
             Directory.SetCurrentDirectory("D:\\");
             Stopwatch timer = new();
             timer.Start();
             var downloadAllTask = DoDownload();
-            downloadAllTask.Wait();
+            await downloadAllTask;
             timer.Stop();
             Console.WriteLine(timer.ElapsedMilliseconds);
         }

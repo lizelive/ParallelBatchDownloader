@@ -5,11 +5,16 @@ namespace ParallelBatchDownloader
 {
     class Download
     {
+        [Timestamp]
+        public byte[] Timestamp { get; set; }
+
+        public DateTime Created { get; set; }
+        public DateTime Finished { get; set; }
         public string Uri { get; set; }
         public string Path { get; set; }
         public string Hash { get; set; }
         public int Id { get; set; }
-        
+        [ConcurrencyCheck]
         public Status State { get; set; } = Status.Queued;
         public int Size { get; set; }
 
