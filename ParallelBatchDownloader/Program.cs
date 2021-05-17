@@ -20,11 +20,12 @@ namespace ParallelBatchDownloader
         [Option('s', "stats", Required = false, HelpText = "Show progress stats on startup.")]
         public bool ShowStats { get; set; }
 
-        [Option('v', "verbose", Required = false, HelpText = "Set output to verbose messages.")]
+        [Option('t', "import-tsv", Required = false, HelpText = "verbose messages")]
 
         public string ImportTsv { get; set; }
+        [Option('c', "max-concurrent-connections", Required = false, HelpText = "max numbers of concurrent connections")]
 
-
+        public int MaxConcurrentConnections { get; set;  }
     }
     class Program
     {
