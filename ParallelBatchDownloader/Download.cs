@@ -24,7 +24,9 @@ namespace ParallelBatchDownloader
             Downloading=2,
             Downloaded=3,
             Completed=4,
-            Failed=5
+            Validated = 7,
+            Failed=5,
+            HashError=6
         }
 
         static readonly Uri Base = new("file:\\D:\\");

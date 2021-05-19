@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using System.Security.Cryptography;
 using System.Timers;
 using CommandLine;
+using System.Threading;
 
 namespace ParallelBatchDownloader
 {
@@ -25,13 +26,12 @@ namespace ParallelBatchDownloader
         public string ImportTsv { get; set; }
         [Option('c', "max-concurrent-connections", Required = false, HelpText = "max numbers of concurrent connections")]
 
-        public int MaxConcurrentConnections { get; set;  }
+        public int MaxConcurrentConnections { get; set; }
     }
     class Program
     {
-        static object failock = new object();
-        static object winlock = new object();
-
+        static object writelock = new object();
+        static Semaphore writeLimiter = new(0, 4, "batchdownloaderdisk");
         static async Task DoSomething(Download dr)
         {
             using var context = new DownloadContext();
@@ -39,6 +39,7 @@ namespace ParallelBatchDownloader
             //if (dr.State != Download.Status.Queued && dr.State != Download.Status.Failed)
             //    throw new Exception($"DL Request is in invalid state {dr.State}");
             dr.State = Download.Status.Downloading;
+            dr.Created = DateTime.UtcNow;
             await context.SaveChangesAsync();
 
             //using var transaction = Context.Database.BeginTransaction();
@@ -59,9 +60,21 @@ namespace ParallelBatchDownloader
                 await context.SaveChangesAsync();
 
                 Directory.CreateDirectory(Path.GetDirectoryName(dr.Path));
-                var writeTask = File.WriteAllBytesAsync(dr.Path, data);
-                await writeTask;
+                lock (writelock)
+                {
+                    // for hard drive only write one file at a time
+                    File.WriteAllBytes(dr.Path, data);
+                }
+
+                //writeLimiter.WaitOne();
+                //File.WriteAllBytes(dr.Path, data);
+                //writeLimiter.Release();
+
+                //var writeTask = File.WriteAllBytesAsync(dr.Path, data);
+                //await writeTask;
+
                 dr.State = Download.Status.Completed;
+                dr.Finished = DateTime.UtcNow;
                 await context.SaveChangesAsync();
             }
             catch (Exception e)
@@ -70,47 +83,99 @@ namespace ParallelBatchDownloader
 
                 dr.State = Download.Status.Failed;
                 await context.SaveChangesAsync();
+                Console.Error.WriteLine($"{dr} failed");
             }
         }
 
-        static void ImportTsv()
+        static void ImportTsv(string path)
         {
             using var context = new DownloadContext();
-            context.AddRange(File.ReadAllLines("D:\\todownload.tsv").Select(Download.Parse));
+            context.AddRange(File.ReadAllLines(path).Select(Download.Parse));
             context.SaveChanges();
         }
 
+
+        static DateTime lastStatusTime = DateTime.UtcNow;
+        static long lastTodo;
         static void ShowStatus(object sender = null, ElapsedEventArgs e = null)
         {
             using var context = new DownloadContext();
+            var todo = context.Downloads.Count(x => x.State == Download.Status.Queued);
+            var now = DateTime.UtcNow;
+            var totalBytesToDownloaded = context.Downloads.Where(x => x.State == Download.Status.Completed).Average(x => x.Size) * todo;
 
-            var totalBytesToDownloaded = context.Downloads.Where(x => x.State == Download.Status.Completed).Average(x => x.Size) * context.Downloads.Count();
+            var elapsed = now - lastStatusTime;
+            var doneSenseLast = lastTodo - todo;
+            var ratePerSecond = doneSenseLast / elapsed.TotalSeconds;
+            var estimatedTimeSeconds = todo / ratePerSecond;
+            var estimated = TimeSpan.FromSeconds(estimatedTimeSeconds);
 
-            Console.WriteLine(totalBytesToDownloaded + " bytes to download");
-            
-            Console.WriteLine(DateTimeOffset.Now);
-            var summery = context.Downloads.AsEnumerable().GroupBy(x => x.State).Select(x => (x.Key, Value: x.Count()));
-            foreach (var value in summery)
+
+            Console.WriteLine($"{DateTimeOffset.Now} : {todo} ( ~{totalBytesToDownloaded / 1E+09} GB ) est {estimated}, {ratePerSecond * 60} dpm");
+
+            //foreach (var status in Enum.GetValues<Download.Status>())
+            //{
+            //    var count = context.Downloads.Count(x => x.State == status);
+            //    Console.WriteLine($"{status}\t{count}");
+            //}
+
+            lastStatusTime = now;
+            lastTodo = context.Downloads.Count(x => x.State != Download.Status.Completed);
+        }
+
+
+        static void ShowCounts()
+        {
+
+            using var context = new DownloadContext();
+            foreach (var status in Enum.GetValues<Download.Status>())
             {
-                Console.WriteLine($"{value.Key}\t{value.Value}");
+                var count = context.Downloads.Count(x => x.State == status);
+                Console.WriteLine($"{status}\t{count}");
+            }
+        }
+        static void Validate()
+        {
+            using var context = new DownloadContext();
+            foreach (var download in context.Downloads.Where(x => x.State == Download.Status.Completed))
+            {
+                using SHA256 mySHA256 = SHA256.Create();
+                var hash = mySHA256.ComputeHash(File.OpenRead(download.Path));
+                var good = download.Hash == Convert.ToHexString(hash);
+                if (!good)
+                {
+                    Console.WriteLine($"hasherror {download}");
+                    download.State = Download.Status.HashError;
+
+                }
+                else
+                {
+                    download.State = Download.Status.Validated;
+                }
+                context.SaveChanges();
             }
         }
 
         static Task DoDownload()
         {
+            var allowFailed = true;
             using var context = new DownloadContext();
-            var toDo = context.Downloads.Where(x => x.State != Download.Status.Completed);
+            var toDo = context.Downloads.Where(x => x.State != Download.Status.Completed && (allowFailed || x.State != Download.Status.Failed));
             return toDo.AsyncParallelForEach(DoSomething, maxDegreeOfParallelism: 10);
         }
         static async Task Main(string[] args)
         {
+            Directory.SetCurrentDirectory("F:\\");
+
             //ImportTsv();
-            ShowStatus();
-            //Timer showStatusTimer = new(60);
+            //ShowStatus();
+            //System.Timers.Timer showStatusTimer = new(60*1000);
             //showStatusTimer.Elapsed += ShowStatus;
             //showStatusTimer.Start();
-
-            Directory.SetCurrentDirectory("D:\\");
+            ShowCounts();
+            Validate();
+            ShowCounts();
+            return;
             Stopwatch timer = new();
             timer.Start();
             var downloadAllTask = DoDownload();
@@ -120,3 +185,4 @@ namespace ParallelBatchDownloader
         }
     }
 }
+
