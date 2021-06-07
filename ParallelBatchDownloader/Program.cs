@@ -10,6 +10,7 @@ using System.Security.Cryptography;
 using System.Timers;
 using CommandLine;
 using System.Threading;
+using System.Text.RegularExpressions;
 
 namespace ParallelBatchDownloader
 {
@@ -30,6 +31,12 @@ namespace ParallelBatchDownloader
     }
     class Program
     {
+        public static string RemoveInvalidFilePathCharacters(string filename, string replaceChar)
+        {
+            string regexSearch = new string(Path.GetInvalidFileNameChars()) + new string(Path.GetInvalidPathChars()) + "<>:\"?";
+            Regex r = new Regex(string.Format("[{0}]", Regex.Escape(regexSearch)));
+            return r.Replace(filename, replaceChar);
+        }
         static object writelock = new object();
         static Semaphore writeLimiter = new(0, 4, "batchdownloaderdisk");
         static async Task DoSomething(Download dr)
@@ -43,7 +50,8 @@ namespace ParallelBatchDownloader
             await context.SaveChangesAsync();
 
             //using var transaction = Context.Database.BeginTransaction();
-            Directory.CreateDirectory(Path.GetDirectoryName(dr.Path));
+            var path = Path.Join(Path.GetDirectoryName(dr.Path), RemoveInvalidFilePathCharacters(Path.GetFileName(dr.Path), "_"));
+
             //using WebClient client = new();
 
             try
@@ -58,12 +66,13 @@ namespace ParallelBatchDownloader
                 dr.Hash = Convert.ToHexString(hash);
                 dr.State = Download.Status.Downloaded;
                 await context.SaveChangesAsync();
+                Console.WriteLine(dr.Path);
 
-                Directory.CreateDirectory(Path.GetDirectoryName(dr.Path));
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
                 lock (writelock)
                 {
                     // for hard drive only write one file at a time
-                    File.WriteAllBytes(dr.Path, data);
+                    File.WriteAllBytes(path, data);
                 }
 
                 //writeLimiter.WaitOne();
@@ -76,6 +85,12 @@ namespace ParallelBatchDownloader
                 dr.State = Download.Status.Completed;
                 dr.Finished = DateTime.UtcNow;
                 await context.SaveChangesAsync();
+            }
+            catch (HttpRequestException e)
+            {
+                dr.State = Download.Status.Failed;
+                await context.SaveChangesAsync();
+                Console.Error.WriteLine($"http error {dr} {e.StatusCode}");
             }
             catch (Exception e)
             {
@@ -160,12 +175,12 @@ namespace ParallelBatchDownloader
         {
             var allowFailed = true;
             using var context = new DownloadContext();
-            var toDo = context.Downloads.Where(x => x.State != Download.Status.Completed && (allowFailed || x.State != Download.Status.Failed));
+            var toDo = context.Downloads.Where(x => x.State != Download.Status.Completed && x.State != Download.Status.Validated && (allowFailed || x.State != Download.Status.Failed));
             return toDo.AsyncParallelForEach(DoSomething, maxDegreeOfParallelism: 10);
         }
         static async Task Main(string[] args)
         {
-            Directory.SetCurrentDirectory("F:\\");
+            Directory.SetCurrentDirectory("D:\\ftcg\\gpoly");
 
             //ImportTsv();
             //ShowStatus();
@@ -173,7 +188,8 @@ namespace ParallelBatchDownloader
             //showStatusTimer.Elapsed += ShowStatus;
             //showStatusTimer.Start();
             ShowCounts();
-            Validate();
+            await DoDownload();
+            //Validate();
             ShowCounts();
             return;
             Stopwatch timer = new();
